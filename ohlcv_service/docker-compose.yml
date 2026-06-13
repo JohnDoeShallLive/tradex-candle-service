@@ -21,7 +21,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "8080:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://ohlcv:ohlcv@db:5432/ohlcv
       SYNC_DATABASE_URL: postgresql://ohlcv:ohlcv@db:5432/ohlcv
