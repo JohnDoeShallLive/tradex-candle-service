@@ -16,9 +16,11 @@ def get_candle_query(bucket_type: str) -> str:
             b.instrument_token, b.bucket,
             COALESCE(
                 (SELECT volume FROM ticks t2
-                 WHERE t2.instrument_token = b.instrument_token AND t2.ts < b.bucket
+                 WHERE t2.instrument_token = b.instrument_token 
+                   AND t2.ts < b.bucket
+                   AND date_trunc('day', t2.ts) = date_trunc('day', b.bucket)
                  ORDER BY t2.ts DESC, t2.id DESC LIMIT 1),
-                (SELECT MIN(volume) FROM bucketed b2 WHERE b2.bucket = b.bucket)
+                0
             ) AS ref_volume
         FROM bucketed b
     ),
@@ -38,6 +40,6 @@ def get_candle_query(bucket_type: str) -> str:
         )
     )
     SELECT DISTINCT bucket, open, high, low, close,
-        GREATEST(0, max_vol_in_bucket - ref_volume) AS volume
+        max_vol_in_bucket - ref_volume AS volume
     FROM aggregated ORDER BY bucket;
     """

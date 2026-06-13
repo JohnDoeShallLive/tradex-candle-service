@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OHLCV Terminal | Advanced Analytics</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+    <div class="glow-bg"></div>
+    <div class="dashboard">
+        <header>
+            <div class="logo">
+                <span class="logo-icon"></span>
+                <h1>OHLCV Terminal</h1>
+            </div>
+            <div class="controls">
+                <button id="btn-daily" class="active">Daily</button>
+                <button id="btn-1min">1 Minute</button>
+            </div>
+        </header>
+
+        <main class="chart-container">
+            <div class="chart-header">
+                <h2>Instrument: <span class="accent">738561</span></h2>
+                <div class="live-status">
+                    <span class="dot"></span> Live SQL Aggregation
+                </div>
+            </div>
+            
+            <div id="chart">
+                <div id="loader" class="loader">
+                    <div class="spinner"></div>
+                    <p>Aggregating Candles via Postgres Window Functions...</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- TradingView Lightweight Charts -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="app.js?v=2"></script>
+</body>
+</html>

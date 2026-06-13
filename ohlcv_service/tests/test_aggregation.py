@@ -30,7 +30,7 @@ async def test_ohlcv_basic(db_session, async_client):
     assert candle["high"] == 105.0
     assert candle["low"] == 95.0
     assert candle["close"] == 95.0
-    assert candle["volume"] == 20 # 30 - 10 (first bucket of day uses MAX - MIN)
+    assert candle["volume"] == 30 # 30 - 0 (first bucket uses 0 baseline)
 
 async def test_out_of_order(db_session, async_client):
     """2. test_out_of_order — insert ticks in REVERSE timestamp order, assert open and close are still correct"""
@@ -76,8 +76,8 @@ async def test_first_bucket_of_day(db_session, async_client):
     })
     data = response.json()
     candle = data[0]
-    # MAX(1050) - MIN(1000) = 50
-    assert candle["volume"] == 50
+    # MAX(1050) - 0 (baseline) = 1050
+    assert candle["volume"] == 1050
 
 async def test_single_tick(db_session, async_client):
     """5. test_single_tick — 1 tick in bucket: open==close==high==low, volume==0"""
@@ -94,7 +94,24 @@ async def test_single_tick(db_session, async_client):
     assert candle["high"] == 100.0
     assert candle["low"] == 100.0
     assert candle["close"] == 100.0
-    assert candle["volume"] == 0
+    assert candle["volume"] == 1000 # Fix: Should be 1000, not 0
+
+async def test_cross_day_boundary(db_session, async_client):
+    """test_cross_day_boundary - massive volume yesterday, small volume today"""
+    await insert_ticks(db_session, [
+        {"instrument_token": 1, "ts": "2026-06-08T15:59:00Z", "last_price": 100.0, "volume": 1000000}, # yesterday
+        {"instrument_token": 1, "ts": "2026-06-09T09:15:00Z", "last_price": 101.0, "volume": 150}, # today
+    ])
+    
+    response = await async_client.get("/ohlcv/1min", params={
+        "instrument_token": 1, "from": "2026-06-09T09:15:00Z", "to": "2026-06-09T09:16:00Z"
+    })
+    data = response.json()
+    assert len(data) == 1
+    candle = data[0]
+    # Yesterday's volume should NOT bleed into today's baseline. Baseline is 0.
+    # Volume is 150 - 0 = 150.
+    assert candle["volume"] == 150
 
 async def test_daily_aggregation(db_session, async_client):
     """10. test_daily_aggregation — assert daily candle spans full day correctly"""

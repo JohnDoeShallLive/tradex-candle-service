@@ -28,13 +28,17 @@ def main():
             for line in f:
                 if not line.strip():
                     continue
-                data = json.loads(line)
-                batch.append({
-                    "instrument_token": data["instrument_token"],
-                    "ts": data["ts"],
-                    "last_price": data["last_price"],
-                    "volume": data["volume"]
-                })
+                try:
+                    data = json.loads(line)
+                    batch.append({
+                        "instrument_token": data["instrument_token"],
+                        "ts": data["ts"],
+                        "last_price": data["last_price"],
+                        "volume": data["volume"]
+                    })
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f"Skipping malformed row: {line.strip()} - Error: {e}", file=sys.stderr)
+                    continue
                 
                 if len(batch) >= batch_size:
                     inserted = insert_batch(session, batch)
