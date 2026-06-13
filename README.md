@@ -149,6 +149,9 @@ Contains the frontend visualization interface.
 - **`app.js`**: Fetches API data and renders TradingView Lightweight Charts.
 - **`style.css`**: Styling definitions for the dashboard.
 
+![Dashboard Demo](images/demo.png)
+![Dashboard Video](images/demo_video.webp)
+
 ## Technology Stack
 
 | Technology | Purpose | Where Used |
