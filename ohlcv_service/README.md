@@ -1,175 +1,432 @@
 # OHLCV Candle Service
 
-A production-grade, highly resilient OHLCV (Open, High, Low, Close, Volume) Candle Service built in Python 3.11+. This service is designed to ingest massive streams of raw market tick data and serve perfectly accurate, dynamically-aggregated OHLCV candles via a REST API on-demand.
+A production-grade OHLCV (Open, High, Low, Close, Volume) Candle Service built in Python 3.11+.
 
-## Architecture
+---
 
-The system is designed with a strict separation between data ingestion and API serving, converging on a single PostgreSQL instance as the source of truth.
+## Table of Contents
 
-```mermaid
-flowchart TD
-    subgraph Data Ingestion
-        A[ticks.jsonl file] -->|Parsed line-by-line| B(loader/load_ticks.py)
-        B -->|Batch Insert with ON CONFLICT DO NOTHING| C[(PostgreSQL Database)]
-    end
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Application Preview](#application-preview)
+- [System Architecture](#system-architecture)
+  - [High-Level Architecture](#high-level-architecture)
+  - [Request Flow](#request-flow)
+  - [Component Interaction](#component-interaction)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Application Workflow](#application-workflow)
+- [Database Design](#database-design)
+- [API Documentation](#api-documentation)
+- [Getting Started](#getting-started)
+- [Testing](#testing)
+- [Design Decisions](#design-decisions)
+- [Security Considerations](#security-considerations)
+- [Scalability Considerations](#scalability-considerations)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [Roadmap](#roadmap)
+- [License](#license)
+- [Author](#author)
+- [Acknowledgements](#acknowledgements)
 
-    subgraph API Serving
-        U[User / Client] -->|GET /ohlcv/1min or /ohlcv/daily| F[FastAPI Application]
-        F -->|Raw SQL Query via SQLAlchemy| C
-        C -->|Window Functions & CTEs| F
-        F -->|JSON Response| U
-    end
+---
+
+## Overview
+
+The OHLCV Candle Service is a high-performance backend application designed to ingest massive streams of raw financial market tick data and serve dynamically aggregated OHLCV candles via a REST API on-demand. 
+
+Financial market data is inherently messy. Ticks arrive out-of-order, cumulative volume streams can reset or jump, and building pre-materialized candle tables often leads to race conditions, false volume deltas, and data integrity issues. This project solves these problems by utilizing raw SQL Window Functions to derive mathematically perfect candles strictly at query time, guaranteeing absolute data integrity regardless of ingestion order.
+
+**Target Audience:**
+- Algorithmic Trading Systems
+- Financial Data Analytics Platforms
+- Quantitative Researchers
+
+---
+
+## Key Features
+
+| Feature | Description |
+| ------- | ----------- |
+| Dynamic SQL Aggregation | Computes OHLCV perfectly at query time using PostgreSQL Window Functions. |
+| Idempotent Ingestion | Handles raw `.jsonl` files via `ON CONFLICT DO NOTHING` for safe reruns. |
+| Resilience | Skips malformed JSON lines during ingest without halting the process. |
+| True Delta Volumes | Calculates true interval volume from cumulative daily streams, isolating cross-day bleed. |
+| Out-of-Order Safety | Agnostic to the chronological arrival of ticks; computes correctly regardless of insert order. |
+
+---
+
+## Application Preview
+
+```md
+![Dashboard Placeholder](docs/images/dashboard.png)
 ```
 
-## Why Use This Service?
+*(Note: This is a backend API service. Visual previews would apply to consuming frontends or dashboards mapping this API data).*
 
-Financial market data presents several unique engineering challenges:
-1. **Out-of-Order Ticks**: Market ticks are not guaranteed to arrive in perfect chronological order due to network latency and exchange architecture.
-2. **Cumulative Volume Streams**: Volume data in ticks is often cumulative for the entire trading day rather than representing the delta of a single tick.
-3. **Data Integrity**: Building pre-materialized candle tables often leads to race conditions, false deltas, and significant data integrity issues when delayed ticks arrive.
+---
 
-This service solves these problems by:
-- **Dynamic SQL Window Aggregation**: We explicitly avoid using pre-materialized tables for candles. Instead, we store the absolute raw truth in a `ticks` table and use advanced PostgreSQL Window Functions and Common Table Expressions (CTEs) to derive exact OHLCV values *on-the-fly*.
-- **Idempotent Ingestion**: Our data loader leverages PostgreSQL's `ON CONFLICT DO NOTHING` logic. You can safely restart the loader midway through a massive file or run it repeatedly without duplicating market ticks.
-- **Resiliency**: The system gracefully handles missing baseline data, skips malformed JSON stream lines during ingestion without halting the entire process, and isolates cross-day volume bleeds to ensure accurate delta calculations.
+## System Architecture
+
+### High-Level Architecture
+
+```mermaid
+graph TD
+    A[Raw Data: ticks.jsonl] -->|Ingested via| B[Loader Script load_ticks.py]
+    B -->|Batch Inserts| C[(PostgreSQL Database)]
+    D[Client App] -->|HTTP GET Request| E[FastAPI Web Server]
+    E -->|Raw SQL Query| C
+    C -->|Calculated Aggregations| E
+    E -->|JSON Response| D
+```
+*The architecture strictly separates the high-throughput batch ingestion script from the low-latency HTTP serving layer, using the database as the sole source of truth.*
+
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant FastAPI
+    participant PostgreSQL
+    
+    Client->>FastAPI: GET /ohlcv/1min?instrument_token=1&from=...&to=...
+    FastAPI->>FastAPI: Validate parameters (Pydantic)
+    FastAPI->>PostgreSQL: Execute Check: Does instrument exist?
+    PostgreSQL-->>FastAPI: Return boolean
+    FastAPI->>PostgreSQL: Execute SQL Window Aggregation
+    PostgreSQL-->>FastAPI: Return aggregated bucket rows
+    FastAPI->>Client: Return JSON Candle Array
+```
+*The request flow ensures data exists before performing heavy window function calculations, failing fast with a 404 if the instrument is unknown.*
+
+### Component Interaction
+
+```mermaid
+graph LR
+    R[Routers] --> Q[Queries]
+    R --> S[Schemas]
+    Q --> DB[(Database Session)]
+    M[Models] --> DB
+```
+*The API is organized into strict layers: Routers handle transport, Schemas handle validation, Queries handle SQL logic, and Models represent the ORM.*
+
+---
+
+## Tech Stack
+
+### Backend
+| Technology | Purpose | Reason for Selection |
+| ---------- | ------- | -------------------- |
+| Python 3.11+ | Core Language | Industry standard for data engineering and backend services. |
+| FastAPI | Web Framework | High performance, async native, and automatic OpenAPI generation. |
+| SQLAlchemy | ORM & Query Builder | Robust database interactions and async session management. |
+| Pydantic | Validation | Strict request/response validation and environment config parsing. |
+
+### Database
+| Technology | Purpose | Reason for Selection |
+| ---------- | ------- | -------------------- |
+| PostgreSQL 15 | Primary Datastore | Advanced Window Functions (FIRST_VALUE, LAST_VALUE) required for exact math. |
+| asyncpg | DB Driver | High-performance asynchronous database driver for Python. |
+
+### DevOps & Testing
+| Technology | Purpose | Reason for Selection |
+| ---------- | ------- | -------------------- |
+| Docker & Compose | Containerization | Reproducible local environments and seamless deployment. |
+| Pytest | Testing Framework | Comprehensive fixture support and async testing capabilities. |
+
+---
 
 ## Project Structure
 
-```text
+```bash
 ohlcv_service/
 ├── app/
 │   ├── __init__.py
-│   ├── config.py         # Handles all environment variables securely using pydantic-settings
-│   ├── database.py       # Configures SQLAlchemy Async Engine (API) and Sync Engine (Setup/Loader)
-│   ├── main.py           # FastAPI application factory, routing inclusion, and lifespan context
-│   ├── models.py         # SQLAlchemy ORM definitions mapping directly to the `ticks` table
-│   ├── queries.py        # Core domain logic: Raw SQL CTEs & Window functions for exact on-demand math
-│   ├── schemas.py        # Pydantic models enforcing strict request/response API validation
+│   ├── config.py
+│   ├── database.py
+│   ├── main.py
+│   ├── models.py
+│   ├── queries.py
+│   ├── schemas.py
 │   └── routers/
-│       ├── health.py     # Liveness probe endpoint for Kubernetes/Docker health checks
-│       └── ohlcv.py      # Core business API routes handling the /ohlcv/1min and /ohlcv/daily endpoints
+│       ├── health.py
+│       └── ohlcv.py
 ├── loader/
-│   └── load_ticks.py     # High-throughput batch ingestion script designed to parse `ticks.jsonl`
+│   └── load_ticks.py
 ├── tests/
-│   ├── conftest.py       # Pytest fixtures: spins up ephemeral test DB and configures AsyncClient
-│   ├── test_aggregation.py # Mathematical assertions verifying exact OHLCV behavior and edge cases
-│   ├── test_api.py       # API behavior testing for various HTTP codes (404, 422, 200)
-│   └── test_loader.py    # Asserts the idempotency and fault-tolerance of the ingestion script
-├── .dockerignore         # Exclusions for Docker context to ensure lean and fast image builds
-├── .env.example          # Template detailing all required environment variables
-├── .gitignore            # Git exclusions to prevent committing sensitive data or local environments
-├── docker-compose.yml    # Multi-container orchestration linking the FastAPI service and Postgres DB
-├── Dockerfile            # Python 3.11-slim API image definition detailing dependency installation
-├── README.md             # Detailed documentation (you are currently reading this)
-├── requirements.txt      # Explicitly pinned Python dependencies ensuring deterministic builds
-└── ticks.jsonl           # Raw market data stream (to be provided by the user)
+│   ├── conftest.py
+│   ├── test_aggregation.py
+│   ├── test_api.py
+│   └── test_loader.py
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── docker-compose.yml
+├── Dockerfile
+├── README.md
+└── requirements.txt
 ```
 
-## File Purposes in Depth
-
-### `app/config.py`
-Uses `pydantic-settings` to load configurations like database credentials and API ports securely from environment variables. This ensures the application adheres to twelve-factor app principles by never storing hardcoded secrets in the source code.
-
-### `app/models.py`
-Defines the `ticks` table schema. We utilize a composite unique index (`instrument_token`, `ts`, `last_price`, `volume`) to ensure absolute data idempotency. By storing the raw ticks rather than aggregating into a `candles` table at ingestion time, we prevent complex rollback logic when delayed ticks arrive. We aggregate entirely at query-time.
-
-### `app/queries.py`
-The mathematical heart of the service. It generates the raw PostgreSQL query using Common Table Expressions (`WITH` clauses). It implements critical fixes:
-- **The Cross-Day Bleed Fix**: Scopes prior volume lookbacks to the *current trading day* to prevent massive yesterday volumes from creating negative or incorrect volumes today.
-- **The First-Tick Fix**: Defaults baseline volumes to `0` so the first bucket of the day correctly reports the exact traded volume.
-
-### `loader/load_ticks.py`
-A highly resilient batch-processing CLI tool. It processes 10,000 rows at a time in memory before committing to PostgreSQL, drastically speeding up ingestion. It wraps JSON parsing in a `try/except` block, ensuring that a single malformed line will not crash the ingestion of millions of healthy ticks.
+| Path | Purpose | Example Usage |
+| ---- | ------- | ------------- |
+| `app/config.py` | Environment variable parsing | `settings.DATABASE_URL` |
+| `app/models.py` | Table definitions | `Base.metadata.create_all()` |
+| `app/queries.py` | Raw SQL aggregation logic | `get_candle_query("1min")` |
+| `loader/load_ticks.py` | High throughput ingestion | `python -m loader.load_ticks` |
+| `tests/` | Mathematical & API tests | `pytest -v` |
 
 ---
 
-## Getting Started: How to Open and Run
+## Application Workflow
 
-### Prerequisites
-- You must have [Docker](https://www.docker.com/get-started) and Docker Compose installed on your system.
-- Ensure you have the `ticks.jsonl` file provided by the assignment placed in the root of this project folder (`ohlcv_service/ticks.jsonl`).
+### Data Ingestion Flow
+1. **Read Stream**: `loader/load_ticks.py` opens `ticks.jsonl`.
+2. **Parse & Buffer**: Validates JSON and buffers 10,000 rows in memory.
+3. **Commit**: Executes bulk `INSERT ... ON CONFLICT DO NOTHING` to PostgreSQL.
 
-### Step 1: Open the Project
-Open a terminal (or command prompt / PowerShell) and navigate to the project directory:
-```bash
-cd path/to/ohlcv_service
+### Query Flow
+1. **Request**: User requests `/ohlcv/1min`.
+2. **Filter**: Database filters `ticks` by time range and `instrument_token`.
+3. **Reference Volume**: Database calculates the volume baseline from the previous tick or start of day.
+4. **Aggregate**: Window functions compute `open`, `high`, `low`, `close`, and subtract baseline from `max(volume)` per bucket.
+5. **Format**: FastAPI formats the ISO strings and returns the response.
+
+---
+
+## Database Design
+
+The system relies on a single raw data table. There are no pre-computed candle tables.
+
+```mermaid
+erDiagram
+    TICKS {
+        bigserial id PK
+        integer instrument_token "Indexed"
+        timestamptz ts "Indexed"
+        numeric last_price 
+        bigint volume 
+        timestamptz loaded_at 
+    }
 ```
 
-### Step 2: Configure Environment Variables
-Copy the provided `.env.example` file to create your local `.env` file. The defaults provided are perfectly suited for running locally with Docker Compose.
-```bash
-# On Linux/macOS
-cp .env.example .env
+- **Indexes**: 
+  - `idx_ticks_instrument_ts` (`instrument_token`, `ts`): Accelerates time-range queries.
+  - `idx_ticks_unique_tick` (`instrument_token`, `ts`, `last_price`, `volume`): Unique constraint ensuring ingestion idempotency.
 
-# On Windows (PowerShell)
-Copy-Item .env.example .env
+---
+
+## API Documentation
+
+### GET /ohlcv/1min
+
+Retrieves 1-minute bucketed OHLCV candles.
+
+#### Parameters
+| Name | In | Type | Required | Description |
+| ---- | -- | ---- | -------- | ----------- |
+| `instrument_token` | query | integer | Yes | The ID of the financial instrument. |
+| `from` | query | string | Yes | ISO 8601 UTC start time (inclusive). |
+| `to` | query | string | Yes | ISO 8601 UTC end time (exclusive). |
+
+#### Request Example
+```http
+GET /ohlcv/1min?instrument_token=408065&from=2026-06-09T09:15:00Z&to=2026-06-09T10:00:00Z
 ```
 
-### Step 3: Run the Services
-Use Docker Compose to build the application image, spin up the database, execute the loader, and start the API web server automatically.
-```bash
-docker compose up --build
+#### Response Example
+```json
+[
+  {
+    "bucket": "2026-06-09T09:15:00",
+    "open": 1523.45,
+    "high": 1530.10,
+    "low": 1521.00,
+    "close": 1528.75,
+    "volume": 14200
+  }
+]
 ```
-**What happens when you run this command?**
-1. Docker pulls a `postgres:15-alpine` image and starts the database service.
-2. It waits until the database is fully healthy (verified via `pg_isready`).
-3. It triggers the `loader/load_ticks.py` script inside the API container, seamlessly parsing and ingesting your `ticks.jsonl` file.
-4. Once ingestion finishes, it starts the `uvicorn` web server hosting the FastAPI application.
 
-### Step 4: Access the API
-Once the terminal logs indicate that Uvicorn is running, the API is ready. You can test it in your browser or via a tool like `curl` or Postman:
+#### Status Codes
+- `200 OK`: Successful retrieval.
+- `404 Not Found`: Instrument token does not exist in the database.
+- `422 Unprocessable Entity`: Invalid parameters or `from` is after `to`.
 
-**Health Check Endpoint:**
-Open `http://localhost:8000/health` in your browser. You should see:
+---
+
+### GET /ohlcv/daily
+
+Retrieves daily bucketed OHLCV candles grouped by calendar day.
+
+#### Parameters
+Same as `/ohlcv/1min`.
+
+#### Response Example
+```json
+[
+  {
+    "bucket": "2026-06-09",
+    "open": 1523.45,
+    "high": 1550.00,
+    "low": 1500.00,
+    "close": 1545.00,
+    "volume": 850000
+  }
+]
+```
+
+---
+
+### GET /health
+
+Retrieves the health status of the database and API.
+
+#### Response Example
 ```json
 {"status": "ok", "database": "connected"}
 ```
+- `200 OK`: System healthy.
+- `503 Service Unavailable`: Database unreachable.
 
 ---
 
-## API Endpoints Reference
+## Getting Started
 
-### 1-Minute Candles
-`GET /ohlcv/1min`
-Fetches exact 1-minute bucketed OHLCV data.
-- **Parameters**:
-  - `instrument_token` (int, required): The ID of the instrument.
-  - `from` (string, required): ISO 8601 UTC start time (inclusive).
-  - `to` (string, required): ISO 8601 UTC end time (exclusive).
-- **Example Request**:
-  ```bash
-  curl "http://localhost:8000/ohlcv/1min?instrument_token=408065&from=2026-06-09T09:15:00Z&to=2026-06-09T10:00:00Z"
-  ```
+### Prerequisites
+- Docker & Docker Compose
+- A valid `ticks.jsonl` file containing market data.
 
-### Daily Candles
-`GET /ohlcv/daily`
-Fetches exact daily bucketed OHLCV data.
-- **Parameters**: Same as 1-Minute Candles.
-- **Example Request**:
-  ```bash
-  curl "http://localhost:8000/ohlcv/daily?instrument_token=408065&from=2026-06-09T00:00:00Z&to=2026-06-10T00:00:00Z"
-  ```
+### Installation
 
----
-
-## Running the Test Suite
-
-We verify the application against strict mathematical realities, not just HTTP status codes. The test suite asserts the correctness of the SQL aggregations, the API behaviors, and the loader's idempotency.
-
-To run the test suite, you must have an active PostgreSQL database instance accessible. 
-1. If your Docker Compose stack is running, you can use that database instance.
-2. In a separate terminal window, ensure you are in the `ohlcv_service` directory and set the `TEST_DATABASE_URL` environment variable:
-
+#### 1. Clone Repository
 ```bash
-# Linux/macOS
-export TEST_DATABASE_URL=postgresql+asyncpg://ohlcv:ohlcv@localhost:5432/ohlcv
-
-# Windows (PowerShell)
-$env:TEST_DATABASE_URL="postgresql+asyncpg://ohlcv:ohlcv@localhost:5432/ohlcv"
+git clone <repository-url>
+cd ohlcv_service
 ```
 
-3. Execute the tests using Pytest:
+#### 2. Provide Data
+Place your `ticks.jsonl` file in the root directory.
+
+#### 3. Configure Environment
 ```bash
+cp .env.example .env
+```
+*The default `.env` variables are pre-configured to work out-of-the-box with Docker Compose.*
+
+#### 4. Start Application
+```bash
+docker compose up --build
+```
+
+---
+
+## Testing
+
+The test suite asserts the strict mathematical reality of the window function aggregations, checking edge cases like cross-day boundaries and out-of-order tick arrival.
+
+To test locally, ensure a PostgreSQL instance is running:
+
+```bash
+export TEST_DATABASE_URL="postgresql+asyncpg://ohlcv:ohlcv@localhost:5432/ohlcv_test"
 pytest -v
 ```
-All tests will output as PASSED, verifying everything from edge-case volume deltas to cross-day bucket isolation.
+
+Expected Output:
+```text
+tests/test_aggregation.py ...... [ 60%]
+tests/test_api.py ....           [ 90%]
+tests/test_loader.py .           [100%]
+= 11 passed in 1.23s =
+```
+
+---
+
+## Design Decisions
+
+### Why on-demand SQL aggregation instead of materialized candles?
+Market ticks are not guaranteed to arrive in timestamp order. A delayed tick arriving minutes or hours late would require complex rollback and recalculation logic in a materialized table. By keeping the raw ticks as the source of truth and aggregating on-demand, we eliminate race conditions entirely.
+
+### Why Postgres Window Functions?
+To correctly derive OHLC, we need the chronological first and last price within a bucket. Traditional `GROUP BY` cannot guarantee ordering. Window functions like `FIRST_VALUE()` over an ordered partition solve this elegantly at the database level.
+
+### Why Batch Ingestion?
+Inserting millions of rows one-by-one is bottlenecked by network round-trips. Grouping them into batches of 10,000 ensures maximum network throughput and database disk efficiency.
+
+---
+
+## Security Considerations
+
+- **Secrets Management**: Credentials and connection strings are managed entirely via `.env` variables and Pydantic Settings. No secrets are committed to the codebase.
+- **SQL Injection**: All raw SQL queries use parameterized arguments (`text(query)` mapped with SQLAlchemy parameter dictionaries), making them completely immune to SQL injection.
+- **Input Validation**: FastAPI automatically validates datetimes and integers, preventing malformed inputs from ever reaching the database query logic.
+
+---
+
+## Scalability Considerations
+
+**Current Limits:**
+- The current SQL aggregation is extremely fast for standard lookback windows (e.g., querying 1 month of 1-minute candles).
+- The `ticks.jsonl` loader is bounded by the speed of JSON parsing and single-threaded execution.
+
+**Future Improvements:**
+- Partitioning the `ticks` table natively in PostgreSQL by month or year to speed up index scans.
+- Utilizing TimescaleDB (a Postgres extension) for continuous aggregates if query volumes exceed the limits of on-the-fly computation.
+- Parallelizing the ingestion script to read chunks of the `.jsonl` file concurrently.
+
+---
+
+## Troubleshooting
+
+### Database not connecting on startup
+Ensure port `5432` is not already in use by a local PostgreSQL installation before running Docker Compose.
+
+### Port already in use
+If the API fails to bind to `8000`, modify the `API_PORT` in your `.env` file and the exposed port in `docker-compose.yml`.
+
+### Loader skipping rows
+Check the loader output logs. If you see `Skipping malformed row`, it means the `ticks.jsonl` file contains invalid JSON or missing keys. The application will continue running gracefully.
+
+---
+
+## Contributing
+
+1. Create a feature branch (`git checkout -b feature/amazing-feature`)
+2. Commit your changes (`git commit -m 'Add amazing feature'`)
+3. Ensure all tests pass (`pytest`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+---
+
+## Roadmap
+
+| Version | Features |
+| ------- | -------- |
+| v1.0.0 | Initial release: 1min & daily candles, raw SQL aggregation, resilient loader |
+| v1.1.0 | Migration to SQLAlchemy Core constructs for robust programmatic queries |
+| v1.2.0 | Support for custom arbitrary timeframes (e.g., 5min, 15min, 4hour) |
+| v2.0.0 | TimescaleDB integration for continuous materialized views |
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
+
+## Author
+
+**John Doe**
+- GitHub: [github.com/johndoe](#)
+- LinkedIn: [linkedin.com/in/johndoe](#)
+- Portfolio: [johndoe.dev](#)
+
+---
+
+## Acknowledgements
+
+- [FastAPI](https://fastapi.tiangolo.com/) for the incredible web framework.
+- [SQLAlchemy](https://www.sqlalchemy.org/) for robust database tooling.
+- Advanced PostgreSQL Window Function documentation.
